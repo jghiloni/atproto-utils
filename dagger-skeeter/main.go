@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jghiloni/atproto-utils/dagger-skeeter/internal/dagger"
+	"dagger/dagger-skeeter/internal/dagger"
 
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/api/bsky"

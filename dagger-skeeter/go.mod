@@ -1,4 +1,4 @@
-module github.com/jghiloni/atproto-utils/dagger-skeeter
+module dagger/dagger-skeeter
 
 go 1.22.5
 
