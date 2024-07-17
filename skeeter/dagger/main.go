@@ -1,4 +1,4 @@
-// A generated module for DaggerBskyPoster functions
+// A generated module for Skeeter functions
 //
 // This module has been generated via dagger init and serves as a reference to
 // basic module structure as you get started with Dagger.
@@ -16,13 +16,13 @@ package main
 
 import (
 	"context"
+	"dagger/skeeter/internal/dagger"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
-
-	"dagger/dagger-skeeter/internal/dagger"
 
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/api/bsky"
@@ -32,7 +32,7 @@ import (
 	"github.com/ipfs/go-cid"
 )
 
-// Skeeter dagger module
+// The struct represents the information necessary to post to Bluesky
 type Skeeter struct {
 	// +private
 	PDSURL string
@@ -44,20 +44,13 @@ type Skeeter struct {
 	AppPassword *dagger.Secret
 }
 
-type Skeet struct {
-	x   *xrpc.Client
-	p   *bsky.FeedPost
-	Err error
-}
-
-var linkRE = regexp.MustCompile(`(?i)(https?://[^/]+(?::\d+)?(?:/\S+)?)`)
-
+// Creates a new Skeeter instance
 func New(
 	// Custom PDS URL (defaults to https://bsky.social)
 	// +optional
 	// +default="https://bsky.social"
 	pdsURL string,
-	// bsky username
+	// bsky username (without the leading @)
 	// +optional
 	username string,
 	// bsky app password. get an app password at https://bsky.app/settings/app-passwords
@@ -71,42 +64,54 @@ func New(
 	}
 }
 
+// Sets the bluesky custom Personal Data Server URL
 func (s *Skeeter) WithCustomPDSURL(pdsURL string) *Skeeter {
 	s.PDSURL = pdsURL
 	return s
 }
 
+// Sets the bluesky username
 func (s *Skeeter) WithUsername(username string) *Skeeter {
 	s.Username = username
 	return s
 }
 
+// Sets the app password for a bluesky user (see https://bsky.app/settings/app-passwords)
 func (s *Skeeter) WithAppPassword(appPassword *dagger.Secret) *Skeeter {
 	s.AppPassword = appPassword
 	return s
 }
 
-// Create, but do not publish, a Bluesky post (skeet). It does not upload
-// images
-func (s *Skeeter) CreateSkeet(
+// Creates (and maybe publishes) a Bluesky post, or skeet
+func (s *Skeeter) Publish(
 	ctx context.Context,
+	// The text to post to Bluesky
 	postText string,
+	// If true, parse text and convert URLs to hyperlinks
 	// +optional
+	// +default=true
 	parseLinks bool,
+	// If false, do not publish the skeet. If this is false, the value returned will be the post serialized to JSON
 	// +optional
-	uploadImages bool,
+	// +default=true
+	publish bool,
+	// Any images listed will be uploaded to bluesky and embedded
 	// +optional
 	images ...*dagger.File,
-) *Skeet {
+) (string, error) {
 	post := bsky.FeedPost{
 		CreatedAt: time.Now().Format(time.RFC3339),
 		Text:      postText,
 	}
 
+	linkRE := regexp.MustCompile(`(?i)(?:http[s]?:\/\/.)?(?:www\.)?[-a-zA-Z0-9@%._\+~#=]{2,256}\.[a-z]{2,6}\b(?:[-a-zA-Z0-9@:%_\+.~#?&\/\/=]*)`)
+
 	if parseLinks {
 		ranges := linkRE.FindAllStringIndex(postText, -1)
 		post.Facets = make([]*bsky.RichtextFacet, 0, len(ranges))
 		for _, r := range ranges {
+			fmt.Printf("%v\n", r)
+			fmt.Println(postText[r[0]:r[1]])
 			post.Facets = append(post.Facets, &bsky.RichtextFacet{
 				Index: &bsky.RichtextFacet_ByteSlice{
 					ByteStart: int64(r[0]),
@@ -125,7 +130,7 @@ func (s *Skeeter) CreateSkeet(
 
 	pw, err := s.AppPassword.Plaintext(ctx)
 	if err != nil {
-		return &Skeet{Err: err}
+		return "", err
 	}
 	loginInput := &atproto.ServerCreateSession_Input{
 		Identifier: s.Username,
@@ -139,7 +144,7 @@ func (s *Skeeter) CreateSkeet(
 	}
 	authResult, err := atproto.ServerCreateSession(ctx, xrpcClient, loginInput)
 	if err != nil {
-		return &Skeet{Err: fmt.Errorf("could not log in to Bluesky: %w", err)}
+		return "", fmt.Errorf("could not log in to Bluesky: %w", err)
 	}
 
 	xrpcClient.Auth = &xrpc.AuthInfo{
@@ -153,12 +158,12 @@ func (s *Skeeter) CreateSkeet(
 	for _, img := range images {
 		contents, err := img.Contents(ctx)
 		if err != nil {
-			return &Skeet{Err: err}
+			return "", err
 		}
 
 		name, err := img.Name(ctx)
 		if err != nil {
-			return &Skeet{Err: err}
+			return "", err
 		}
 
 		eImg := &bsky.EmbedImages_Image{
@@ -170,10 +175,10 @@ func (s *Skeeter) CreateSkeet(
 			Size:     0,
 			Ref:      lexutil.LexLink(cid.Undef),
 		}
-		if uploadImages {
+		if publish {
 			output, err := atproto.RepoUploadBlob(ctx, xrpcClient, strings.NewReader(contents))
 			if err != nil {
-				return &Skeet{Err: err}
+				return "", err
 			}
 			eImg.Image = output.Blob
 		}
@@ -187,29 +192,21 @@ func (s *Skeeter) CreateSkeet(
 		},
 	}
 
-	skeet := &Skeet{
-		x:   xrpcClient,
-		p:   &post,
-		Err: nil,
+	if !publish {
+		stringWriter := &strings.Builder{}
+		encoder := json.NewEncoder(stringWriter)
+		encoder.SetIndent("", "  ")
+		if err = encoder.Encode(post); err != nil {
+			return "", err
+		}
+		return stringWriter.String(), errors.New("publish disabled")
 	}
 
-	if len(images) > 0 && !uploadImages {
-		skeet.Err = errors.New("images were not uploaded")
-	}
-
-	return skeet
-}
-
-func (s *Skeet) Publish(ctx context.Context) (string, error) {
-	if s.Err != nil {
-		return "", s.Err
-	}
-
-	result, err := atproto.RepoCreateRecord(ctx, s.x, &atproto.RepoCreateRecord_Input{
+	result, err := atproto.RepoCreateRecord(ctx, xrpcClient, &atproto.RepoCreateRecord_Input{
 		Collection: "app.bsky.feed.post",
-		Repo:       s.x.Auth.Did,
+		Repo:       xrpcClient.Auth.Did,
 		Record: &lexutil.LexiconTypeDecoder{
-			Val: s.p,
+			Val: &post,
 		},
 	})
 
